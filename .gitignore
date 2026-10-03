@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+# never commit data or weights
+data/
+*.pt
+*.pth
+*.mlpackage/
+*.mlmodel
+*.dcm
+*.jpeg
+*.jpg

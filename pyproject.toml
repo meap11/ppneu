@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppneu"
+version = "0.1.0"
+description = "Leakage-controlled, externally validated evaluation of on-device pediatric pneumonia classifiers"
+requires-python = ">=3.9"
+# torch / timm are NOT listed on purpose: Kaggle already ships them, and listing
+# them risks pip replacing Kaggle's CUDA build. Install the package with --no-deps.
+dependencies = ["numpy", "pandas", "pillow", "scipy", "tqdm"]
+
+[tool.setuptools]
+packages = ["ppneu"]
