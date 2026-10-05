@@ -25,6 +25,7 @@ group_coarse merges namespaces:           person12, IM-0115 (IM and NORMAL2-IM m
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -42,19 +43,25 @@ IMG_EXT = {".jpeg", ".jpg", ".png"}
 # Locating the dataset
 # --------------------------------------------------------------------------- #
 
-def find_root(search_dir: str | Path = "/kaggle/input") -> tuple[Path, list[Path]]:
+def find_root(search_dir: str | Path = "/kaggle/input", max_depth: int = 8) -> tuple[Path, list[Path]]:
     """Return (chosen_root, all_candidates).
 
     A candidate is a folder containing train/val/test, each with NORMAL/PNEUMONIA.
     The shallowest one is chosen; the Kaggle copy also contains a nested duplicate.
+
+    Walks directories only and never enters NORMAL/PNEUMONIA/__MACOSX folders, so it
+    does not list the ~11k image files (which is very slow on Kaggle's input mount).
     """
+    skip = {"NORMAL", "PNEUMONIA", "__MACOSX"}
+    base = Path(search_dir)
     candidates = []
-    for p in Path(search_dir).rglob("train"):
-        if "__MACOSX" in p.parts or not p.is_dir():
-            continue
-        root = p.parent
-        if all((root / s / lab).is_dir() for s in SPLITS for lab in LABELS):
-            candidates.append(root)
+    for dirpath, dirnames, _ in os.walk(base):
+        here = Path(dirpath)
+        if set(SPLITS) <= set(dirnames) and all(
+                (here / s / lab).is_dir() for s in SPLITS for lab in LABELS):
+            candidates.append(here)
+        depth = len(here.relative_to(base).parts)
+        dirnames[:] = [] if depth >= max_depth else [d for d in dirnames if d not in skip]
     if not candidates:
         raise FileNotFoundError(f"No train/val/test NORMAL/PNEUMONIA tree under {search_dir}")
     candidates = sorted(set(candidates), key=lambda r: (len(r.parts), str(r)))
