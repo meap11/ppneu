@@ -1,0 +1,50 @@
+{
+  "official": {
+    "n": {
+      "train": 4448,
+      "val": 784,
+      "test": 624
+    },
+    "pos_rate": {
+      "train": 0.742,
+      "val": 0.742,
+      "test": 0.625
+    },
+    "clusters_shared_train_test": 182,
+    "clusters_shared_train_val": 0,
+    "clusters_shared_val_test": 82,
+    "test_images_in_clusters_seen_in_train": 274
+  },
+  "image_random": {
+    "n": {
+      "train": 4099,
+      "val": 878,
+      "test": 879
+    },
+    "pos_rate": {
+      "train": 0.73,
+      "val": 0.73,
+      "test": 0.729
+    },
+    "clusters_shared_train_test": 495,
+    "clusters_shared_train_val": 451,
+    "clusters_shared_val_test": 191,
+    "test_images_in_clusters_seen_in_train": 605
+  },
+  "grouped": {
+    "n": {
+      "train": 4076,
+      "val": 874,
+      "test": 874
+    },
+    "pos_rate": {
+      "train": 0.729,
+      "val": 0.729,
+      "test": 0.729
+    },
+    "clusters_shared_train_test": 0,
+    "clusters_shared_train_val": 0,
+    "clusters_shared_val_test": 0,
+    "test_images_in_clusters_seen_in_train": 0
+  }
+}

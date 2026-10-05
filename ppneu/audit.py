@@ -65,8 +65,8 @@ def find_root(search_dir: str | Path = "/kaggle/input") -> tuple[Path, list[Path
 # Filename -> patient-group parsing
 # --------------------------------------------------------------------------- #
 
-_PERSON = re.compile(r"^person(\d+)_(bacteria|virus)_(\d+)$", re.IGNORECASE)
-_IM = re.compile(r"^(NORMAL2-)?IM-(\d+)-(\d+)$", re.IGNORECASE)
+_PERSON = re.compile(r"^person(\d+)_(bacteria|virus)_(\d+)(?:_\d+)*$", re.IGNORECASE)
+_IM = re.compile(r"^(NORMAL2-)?IM-(\d+)-(\d+)(?:-\d+)*$", re.IGNORECASE)
 
 
 def parse_name(stem: str) -> dict:
