@@ -11,3 +11,6 @@ data/
 *.dcm
 *.jpeg
 *.jpg
+
+# Kaggle training outputs (downloaded per architecture)
+02_train_*_output/
