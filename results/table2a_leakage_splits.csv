@@ -1,0 +1,6 @@
+arch,auroc_image_random,auroc_grouped,error_ratio,all_seeds_higher,sens_image_random,sens_grouped
+densenet121,0.9976,0.9956,1.8307,True,0.9584,0.9304
+efficientnet_b0,0.9979,0.9923,3.6342,True,0.9542,0.9273
+inception_v3,0.998,0.9945,2.7905,True,0.9568,0.9403
+mobilenetv3,0.9976,0.9945,2.2366,True,0.9558,0.9226
+resnet50,0.9972,0.9958,1.5001,True,0.9568,0.9346
