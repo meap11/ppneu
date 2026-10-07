@@ -7,7 +7,7 @@ Rules that protect the paper:
   calibration is one of the paper's main metrics, and class weighting distorts it.
 
 Outputs, in runs/<split>/<arch>/seed<k>/:
-  preds.csv  image_id, fold, y, logit, prob   (val and test)
+  preds.csv  image_id, fold, y, logit, prob   (val and test; FP32 forward pass)
   log.csv    per-epoch train loss, val loss, val AUROC, lr, seconds
   meta.json  config, best epoch, val/test AUROC, versions, GPU, timing
   best.pt    best-epoch weights (state_dict)
@@ -75,13 +75,40 @@ def _predict(model, loader, device, amp):
     return (torch.cat(logits).numpy(), torch.cat(ys).numpy(), torch.cat(ids).numpy())
 
 
-def train_one(cfg: RunConfig, manifest: pd.DataFrame, cache: np.ndarray, force: bool = False) -> dict:
-    """Train one run. Returns meta dict. Skips if preds.csv already exists."""
+def _make_loader(cache, df, cfg: RunConfig, train: bool, mean, std):
     import torch
     from torch.utils.data import DataLoader
 
-    from . import models
     from .data import CXRDataset
+
+    ds = CXRDataset(cache, df, cfg.img_size, train, mean, std)
+    g = torch.Generator().manual_seed(cfg.seed)
+    return DataLoader(ds, batch_size=cfg.batch_size, shuffle=train, drop_last=train,
+                      num_workers=cfg.workers, pin_memory=True, generator=g,
+                      persistent_workers=cfg.workers > 0)
+
+
+def _final_preds(model, cache, folds, cfg, mean, std, device) -> pd.DataFrame:
+    """val and test predictions in full FP32 (no autocast).
+
+    Training-time validation runs under fp16 autocast, which is fine for picking an
+    epoch, but fp16 logits are coarse (many exact ties) and would make a poor FP32
+    reference for the Core ML compression study.
+    """
+    rows = []
+    for fold in ("val", "test"):
+        lg, yy, ii = _predict(model, _make_loader(cache, folds[fold], cfg, False, mean, std),
+                              device, amp=False)
+        rows.append(pd.DataFrame({"image_id": ii, "fold": fold, "y": yy.astype(int),
+                                  "logit": lg, "prob": 1 / (1 + np.exp(-lg.astype(np.float64)))}))
+    return pd.concat(rows, ignore_index=True)
+
+
+def train_one(cfg: RunConfig, manifest: pd.DataFrame, cache: np.ndarray, force: bool = False) -> dict:
+    """Train one run. Returns meta dict. Skips if preds.csv already exists."""
+    import torch
+
+    from . import models
 
     out = cfg.out_dir
     if (out / "preds.csv").exists() and not force:
@@ -99,14 +126,8 @@ def train_one(cfg: RunConfig, manifest: pd.DataFrame, cache: np.ndarray, force: 
     model, mean, std = models.create(cfg.arch)
     model = model.to(device).to(memory_format=torch.channels_last)
 
-    def loader(fold, train):
-        ds = CXRDataset(cache, folds[fold], cfg.img_size, train, mean, std)
-        g = torch.Generator().manual_seed(cfg.seed)
-        return DataLoader(ds, batch_size=cfg.batch_size, shuffle=train, drop_last=train,
-                          num_workers=cfg.workers, pin_memory=True, generator=g,
-                          persistent_workers=cfg.workers > 0)
-
-    dl_train, dl_val = loader("train", True), loader("val", False)
+    dl_train = _make_loader(cache, folds["train"], cfg, True, mean, std)
+    dl_val = _make_loader(cache, folds["val"], cfg, False, mean, std)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     steps = cfg.epochs * len(dl_train)
     warm = max(1, int(cfg.warmup_epochs * len(dl_train)))
@@ -158,19 +179,15 @@ def train_one(cfg: RunConfig, manifest: pd.DataFrame, cache: np.ndarray, force: 
 
     # Final predictions with the best-epoch weights. Test is touched only here.
     model.load_state_dict(torch.load(out / "best.pt", map_location=device))
-    rows = []
-    for fold in ("val", "test"):
-        lg, yy, ii = _predict(model, loader(fold, False), device, amp)
-        rows.append(pd.DataFrame({"image_id": ii, "fold": fold, "y": yy.astype(int),
-                                  "logit": lg, "prob": 1 / (1 + np.exp(-lg))}))
-    preds = pd.concat(rows, ignore_index=True)
+    preds = _final_preds(model, cache, folds, cfg, mean, std, device)
 
     meta = {
         "config": {**asdict(cfg), "out_dir": str(out)},
         "best_epoch": best["epoch"],
         "epochs_run": len(log),
-        "val_auc": _safe_auc(*preds.loc[preds.fold == "val", ["y", "prob"]].to_numpy().T),
-        "test_auc": _safe_auc(*preds.loc[preds.fold == "test", ["y", "prob"]].to_numpy().T),
+        "val_auc": _safe_auc(*preds.loc[preds.fold == "val", ["y", "logit"]].to_numpy().T),
+        "test_auc": _safe_auc(*preds.loc[preds.fold == "test", ["y", "logit"]].to_numpy().T),
+        "pred_precision": "fp32",
         "n": {f: int(len(d)) for f, d in folds.items()},
         "minutes": (time.time() - t0) / 60,
         "gpu": torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
@@ -184,6 +201,59 @@ def train_one(cfg: RunConfig, manifest: pd.DataFrame, cache: np.ndarray, force: 
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     preds.to_csv(out / "preds.csv", index=False)  # written last: marks the run as complete
     return meta
+
+
+def repredict_fp32(run_dir: str | Path, manifest: pd.DataFrame, cache: np.ndarray,
+                   out_root: str | Path, workers: int = 4) -> dict:
+    """Re-predict val/test of a finished run from its best.pt in FP32. No retraining.
+
+    For runs trained before predictions were made in FP32. Writes preds.csv, meta.json
+    (with pred_precision = fp32) and log.csv to out_root/<split>/<arch>/seed<k>/; best.pt
+    is not copied. Returns a comparison with the old (fp16) predictions.
+    """
+    import shutil
+
+    import torch
+
+    from . import models
+
+    run_dir = Path(run_dir)
+    meta = json.loads((run_dir / "meta.json").read_text())
+    c = {k: v for k, v in meta["config"].items() if k != "out_dir"}
+    cfg = RunConfig(**{**c, "out_root": str(out_root), "workers": workers, "limit": None})
+    out = cfg.out_dir
+    if (out / "preds.csv").exists():
+        return json.loads((out / "meta.json").read_text())["repredict"]
+    out.mkdir(parents=True, exist_ok=True)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, mean, std = models.create(cfg.arch, pretrained=False)
+    model.load_state_dict(torch.load(run_dir / "best.pt", map_location="cpu"))
+    model = model.to(device).to(memory_format=torch.channels_last)
+    folds = {f: manifest[manifest["fold"] == f] for f in ("val", "test")}
+    preds = _final_preds(model, cache, folds, cfg, mean, std, device)
+
+    old = pd.read_csv(run_dir / "preds.csv").set_index(["fold", "image_id"])
+    new = preds.set_index(["fold", "image_id"])
+    if set(old.index) != set(new.index):
+        raise ValueError(f"{run_dir}: image sets differ from the original predictions")
+    diff = (new["logit"] - old.loc[new.index, "logit"]).abs()
+    t_new, t_old = new.loc["test"], old.loc["test"]
+    cmp = {"max_abs_logit_diff": float(diff.max()), "median_abs_logit_diff": float(diff.median()),
+           "test_auc_old": _safe_auc(t_old["y"], t_old["logit"]),
+           "test_auc_new": _safe_auc(t_new["y"], t_new["logit"]),
+           "test_ties_old": float(1 - t_old["logit"].nunique() / len(t_old)),
+           "test_ties_new": float(1 - t_new["logit"].nunique() / len(t_new))}
+
+    meta.update({"pred_precision": "fp32", "repredict": cmp,
+                 "val_auc": _safe_auc(new.loc["val", "y"], new.loc["val", "logit"]),
+                 "test_auc": cmp["test_auc_new"]})
+    meta["config"]["out_dir"] = str(out)
+    if (run_dir / "log.csv").exists():
+        shutil.copy(run_dir / "log.csv", out / "log.csv")
+    (out / "meta.json").write_text(json.dumps(meta, indent=2))
+    preds.to_csv(out / "preds.csv", index=False)  # written last: marks the run as complete
+    return cmp
 
 
 def collect(out_root: str | Path = "/kaggle/working/runs") -> pd.DataFrame:

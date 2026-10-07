@@ -14,3 +14,4 @@ data/
 
 # Kaggle training outputs (downloaded per architecture)
 02_train_*_output/
+02b_repredict_output/

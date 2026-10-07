@@ -14,6 +14,7 @@ threshold     the operating point for a target sensitivity (default 95%, screeni
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 from scipy.optimize import minimize_scalar
 
 from .metrics import nll
@@ -43,3 +44,26 @@ def threshold_at_sensitivity(y, score, target: float = 0.95) -> float:
         raise ValueError("no positives to set a sensitivity threshold")
     k = int(np.floor((1 - target) * len(pos) + 1e-9))
     return float(pos[k])
+
+
+def crossfit_threshold_rules(y, score, target: float = 0.95, reps: int = 20, seed: int = 0) -> pd.DataFrame:
+    """Compare threshold rules using validation data only.
+
+    Each repetition fits the threshold on a random half of (y, score) and measures
+    sensitivity/specificity on the other half. Rules: target sensitivity, Youden's J, 0.5.
+    """
+    from sklearn.metrics import roc_curve
+
+    from .metrics import sens_spec
+
+    y, score = np.asarray(y), np.asarray(score, float)
+    rows = []
+    for rep in range(reps):
+        fit = np.random.default_rng(seed + rep).random(len(y)) < 0.5
+        fpr, tpr, th = roc_curve(y[fit], score[fit])
+        rules = {"sens_target": threshold_at_sensitivity(y[fit], score[fit], target),
+                 "youden": float(th[np.argmax(tpr - fpr)]), "0.5": 0.0}
+        for rule, t in rules.items():
+            se, sp = sens_spec(y[~fit], score[~fit], t)
+            rows.append({"rep": rep, "rule": rule, "sens": se, "spec": sp})
+    return pd.DataFrame(rows)

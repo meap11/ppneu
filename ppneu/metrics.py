@@ -76,6 +76,7 @@ def point_metrics(y, logit, threshold: float, T: float = 1.0) -> dict:
     return {
         "auroc": auroc(y, logit), "auprc": auprc(y, logit),
         "sens": se, "spec": sp, "sens_05": se5, "spec_05": sp5,
+        "acc_05": float(np.mean((np.asarray(logit, float) >= 0) == (np.asarray(y) == 1))),
         "nll": nll(y, logit), "brier": brier(y, logit), "ece": ece(y, logit),
         "nll_ts": nll(y, zt), "brier_ts": brier(y, zt), "ece_ts": ece(y, zt),
     }

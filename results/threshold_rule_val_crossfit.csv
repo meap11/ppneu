@@ -1,0 +1,6 @@
+,sens,sens,sens,spec,spec,spec
+rule,0.5,sens_target,youden,0.5,sens_target,youden
+split,,,,,,
+grouped,0.0222,0.0018,0.0047,0.0159,0.0052,0.0077
+image_random,0.02,0.0028,0.0084,0.0171,0.0066,0.0075
+official,0.0088,0.0016,0.005,0.0115,0.0056,0.006

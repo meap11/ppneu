@@ -1,15 +1,17 @@
-"""Thesis ensemble re-done honestly, to measure selection bias.
+"""Thesis ensemble (ResNet-50 + DenseNet-121 + Inception-v3), built without the test set.
 
-The 2023 thesis averaged ResNet-50, DenseNet-121 and Inception-v3 with weights (and the
-model choice) tuned on the official test set. Here the same weighted soft-voting
-ensemble is built per seed, with weights fitted three ways:
+The 2023 thesis tuned the ensemble weights and the model choice on the official test
+set. Here nothing about the ensemble sees test labels:
 
-equal   1/3 each, nothing fitted
-val     grid search on the val fold (honest)
-test    grid search on the test fold itself (the thesis protocol, optimistic)
+1. each member's logits are divided by its own temperature, fitted on val, so a more
+   overconfident member does not dominate the average;
+2. members are combined by soft voting (weighted mean probability), with either
+   equal  1/k each, nothing fitted (primary), or
+   val    weights minimising val log-loss on a simplex grid (does weighting help at all?).
 
-All three are scored on test. test minus val is the selection bias. The same is
-done for picking the single best model.
+The result has the same long format as the members' predictions (image_id, fold, y, logit,
+split, arch, seed), with arch = "ens_<weighting>". It goes through metrics.evaluate_all
+like any single model, so its threshold and temperature are also fitted on val only.
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from . import metrics as M
+from .calibrate import fit_temperature
 
 THESIS_ARCHS = ("resnet50", "densenet121", "inception_v3")
 
@@ -61,48 +64,33 @@ def weight_grid(k: int, step: float = 0.05) -> np.ndarray:
     return np.array(rows, float) / n
 
 
-def accuracy(y, logit) -> float:
-    return float(np.mean((np.asarray(logit) >= 0) == (np.asarray(y) == 1)))
-
-
-def fit_weights(y, Z, objective=accuracy, step: float = 0.05, higher_is_better: bool = True) -> np.ndarray:
-    """Grid-search weights maximising objective(y, combine(Z, w)).
-
-    Ties go to the weights closest to equal, so a flat objective does not pick a corner.
-    """
+def fit_weights(y, Z, step: float = 0.05) -> np.ndarray:
+    """Weights minimising log-loss of combine(Z, w) on (y, Z); ties go to the most equal weights."""
     grid = weight_grid(Z.shape[1], step)
-    scores = np.array([objective(y, combine(Z, w)) for w in grid])
-    if not higher_is_better:
-        scores = -scores
-    best = np.flatnonzero(np.isclose(scores, scores.max(), rtol=0, atol=1e-12))
-    dist = np.abs(grid[best] - 1 / Z.shape[1]).sum(axis=1)
-    return grid[best[np.argmin(dist)]]
+    losses = np.array([M.nll(y, combine(Z, w)) for w in grid])
+    best = np.flatnonzero(losses <= losses.min() + 1e-12)
+    return grid[best[np.argmin(np.abs(grid[best] - 1 / Z.shape[1]).sum(axis=1))]]
 
 
-def selection_bias(preds: pd.DataFrame, split: str = "official", archs=THESIS_ARCHS,
-                   objective=accuracy, step: float = 0.05) -> pd.DataFrame:
-    """One row per (seed, method): ensemble/single-model weights and their test metrics.
+def build(preds: pd.DataFrame, split: str, archs=THESIS_ARCHS,
+          weighting: str = "equal", step: float = 0.05) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Ensemble predictions for every seed of `split`, fitted on val only.
 
-    method: equal | val | test (weights fitted where the name says), and
-            single_val | single_test (best single member chosen on val / on test).
+    Returns (ensemble preds in long format, per-seed fitted temperatures and weights).
     """
-    rows = []
+    if weighting not in ("equal", "val"):
+        raise ValueError("weighting must be 'equal' or 'val'")
+    rows, fitted = [], []
     for seed in sorted(preds.loc[preds["split"] == split, "seed"].unique()):
         _, yv, Zv = member_logits(preds, split, seed, "val", archs)
-        _, yt, Zt = member_logits(preds, split, seed, "test", archs)
-        k = len(archs)
-        choices = {
-            "equal": np.full(k, 1 / k),
-            "val": fit_weights(yv, Zv, objective, step),
-            "test": fit_weights(yt, Zt, objective, step),
-            "single_val": np.eye(k)[np.argmax([objective(yv, Zv[:, j]) for j in range(k)])],
-            "single_test": np.eye(k)[np.argmax([objective(yt, Zt[:, j]) for j in range(k)])],
-        }
-        for method, w in choices.items():
-            z = combine(Zt, w) if w.max() < 1 else Zt[:, int(np.argmax(w))]
-            rows.append({"split": split, "seed": seed, "method": method,
-                         **{f"w_{a}": float(x) for a, x in zip(archs, w)},
-                         "test_acc": accuracy(yt, z), "test_auroc": M.auroc(yt, z),
-                         "test_sens_05": M.sens_spec(yt, z, 0.0)[0],
-                         "test_spec_05": M.sens_spec(yt, z, 0.0)[1]})
-    return pd.DataFrame(rows)
+        T = np.array([fit_temperature(yv, Zv[:, j]) for j in range(len(archs))])
+        w = np.full(len(archs), 1 / len(archs)) if weighting == "equal" else fit_weights(yv, Zv / T, step)
+        fitted.append({"split": split, "seed": seed, "weighting": weighting,
+                       **{f"T_{a}": t for a, t in zip(archs, T)},
+                       **{f"w_{a}": x for a, x in zip(archs, w)}})
+        for fold in ("val", "test"):
+            ids, y, Z = member_logits(preds, split, seed, fold, archs)
+            rows.append(pd.DataFrame({"image_id": ids, "fold": fold, "y": y,
+                                      "logit": combine(Z / T, w), "split": split,
+                                      "arch": f"ens_{weighting}", "seed": seed}))
+    return pd.concat(rows, ignore_index=True), pd.DataFrame(fitted)

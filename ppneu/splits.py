@@ -131,6 +131,24 @@ def build_all(index: pd.DataFrame, seed: int = 0) -> dict[str, pd.DataFrame]:
     }
 
 
+EXTRA_SEEDS = (1, 2)
+
+
+def build_extra(index: pd.DataFrame, seeds=EXTRA_SEEDS) -> dict[str, pd.DataFrame]:
+    """Extra realisations of the two pooled conditions, named <condition>_s<seed>.
+
+    The seed-0 manifests stay frozen; these only show that the image_random vs grouped
+    gap does not depend on one particular split. official has a fixed test set, so it
+    gets no extra realisations.
+    """
+    out = {}
+    for seed in seeds:
+        ms = build_all(index, seed)
+        out[f"image_random_s{seed}"] = ms["image_random"]
+        out[f"grouped_s{seed}"] = ms["grouped"]
+    return out
+
+
 def leakage_report(m: pd.DataFrame) -> dict:
     """Cross-fold sharing of clusters and of exact pixel duplicates (via image_id sets)."""
     g = {f: set(m.loc[m["fold"] == f, "split_group"]) for f in FOLDS}
