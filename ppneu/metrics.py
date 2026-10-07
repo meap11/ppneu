@@ -7,7 +7,8 @@ Metric families:
 * calibration      log-loss and Brier (primary), ECE with 15 equal-width bins
                    (secondary: most probabilities sit near 0 or 1, so binned ECE
                    barely reacts to overconfidence)
-* uncertainty      bootstrap 95% CIs over test images, stratified by class; paired
+* uncertainty      bootstrap 95% CIs, either over images (stratified by class) or over
+                   patient clusters (images of one child are correlated); paired
                    bootstrap for differences on the same images
 
 Everything works on logits; probabilities are derived with a stable sigmoid.
@@ -93,35 +94,75 @@ def _strat_indices(y, n_boot: int, seed: int):
         yield np.concatenate([rng.choice(pos, len(pos)), rng.choice(neg, len(neg))])
 
 
-def bootstrap_ci(fn, y, *arrays, n_boot: int = 2000, seed: int = 0, alpha: float = 0.05):
-    """(estimate, lo, hi) for fn(y, *arrays), class-stratified percentile bootstrap."""
+def _cluster_indices(groups, n_boot: int, seed: int):
+    """Yield resampled index arrays, resampling whole clusters (patients) with replacement.
+
+    Images of one child are correlated, so resampling images alone gives intervals
+    that are too narrow whenever a cluster has several images.
+    """
+    _, inv = np.unique(np.asarray(groups), return_inverse=True)
+    order = np.argsort(inv, kind="stable")
+    members = np.split(order, np.cumsum(np.bincount(inv))[:-1])
+    rng = np.random.default_rng(seed)
+    for _ in range(n_boot):
+        yield np.concatenate([members[g] for g in rng.integers(0, len(members), len(members))])
+
+
+def _indices(y, groups, n_boot, seed):
+    return _strat_indices(y, n_boot, seed) if groups is None else _cluster_indices(groups, n_boot, seed)
+
+
+def _summary(bs, alpha):
+    bs = bs[np.isfinite(bs)]
+    lo, hi = np.percentile(bs, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    p = 2 * min((bs <= 0).mean(), (bs >= 0).mean())
+    return float(lo), float(hi), float(min(p, 1.0))
+
+
+def _safe(fn, *args):
+    try:
+        return fn(*args)
+    except ValueError:  # e.g. a cluster resample with only one class for AUROC
+        return np.nan
+
+
+def bootstrap_ci(fn, y, *arrays, groups=None, n_boot: int = 2000, seed: int = 0, alpha: float = 0.05):
+    """(estimate, lo, hi) for fn(y, *arrays), percentile bootstrap.
+
+    groups=None: class-stratified image bootstrap. groups=cluster ids: cluster bootstrap.
+    """
     y = np.asarray(y)
     arrays = [np.asarray(a) for a in arrays]
     est = fn(y, *arrays)
-    bs = np.array([fn(y[i], *[a[i] for a in arrays]) for i in _strat_indices(y, n_boot, seed)])
-    lo, hi = np.nanpercentile(bs, [100 * alpha / 2, 100 * (1 - alpha / 2)])
-    return float(est), float(lo), float(hi)
+    bs = np.array([_safe(fn, y[i], *[a[i] for a in arrays]) for i in _indices(y, groups, n_boot, seed)])
+    lo, hi, _ = _summary(bs, alpha)
+    return float(est), lo, hi
 
 
-def paired_bootstrap_diff(fn, y, a, b, n_boot: int = 2000, seed: int = 0, alpha: float = 0.05):
+def paired_bootstrap_diff(fn, y, a, b, groups=None, n_boot: int = 2000, seed: int = 0,
+                          alpha: float = 0.05):
     """fn(y, a) - fn(y, b) on the same images: (diff, lo, hi, two-sided p)."""
     y, a, b = np.asarray(y), np.asarray(a), np.asarray(b)
     diff = fn(y, a) - fn(y, b)
-    bs = np.array([fn(y[i], a[i]) - fn(y[i], b[i]) for i in _strat_indices(y, n_boot, seed)])
-    lo, hi = np.nanpercentile(bs, [100 * alpha / 2, 100 * (1 - alpha / 2)])
-    p = 2 * min((bs <= 0).mean(), (bs >= 0).mean())
-    return float(diff), float(lo), float(hi), float(min(p, 1.0))
+    bs = np.array([_safe(lambda: fn(y[i], a[i]) - fn(y[i], b[i]))
+                   for i in _indices(y, groups, n_boot, seed)])
+    return (float(diff),) + _summary(bs, alpha)
 
 
-def bootstrap_diff(fn, ya, a, yb, b, n_boot: int = 2000, seed: int = 0, alpha: float = 0.05):
-    """fn(ya, a) - fn(yb, b) on two independent image sets: (diff, lo, hi, two-sided p)."""
+def bootstrap_diff(fn, ya, a, yb, b, groups_a=None, groups_b=None, n_boot: int = 2000,
+                   seed: int = 0, alpha: float = 0.05):
+    """fn(ya, a) - fn(yb, b) on two independent image sets: (diff, lo, hi, two-sided p).
+
+    Pass groups_a and groups_b together to resample clusters within each set.
+    """
+    if (groups_a is None) != (groups_b is None):
+        raise ValueError("give cluster ids for both sets or for neither")
     ya, a, yb, b = map(np.asarray, (ya, a, yb, b))
     diff = fn(ya, a) - fn(yb, b)
-    ia, ib = _strat_indices(ya, n_boot, seed), _strat_indices(yb, n_boot, seed + 1)
-    bs = np.array([fn(ya[i], a[i]) - fn(yb[j], b[j]) for i, j in zip(ia, ib)])
-    lo, hi = np.nanpercentile(bs, [100 * alpha / 2, 100 * (1 - alpha / 2)])
-    p = 2 * min((bs <= 0).mean(), (bs >= 0).mean())
-    return float(diff), float(lo), float(hi), float(min(p, 1.0))
+    ia = _indices(ya, groups_a, n_boot, seed)
+    ib = _indices(yb, groups_b, n_boot, seed + 1)
+    bs = np.array([_safe(lambda: fn(ya[i], a[i]) - fn(yb[j], b[j])) for i, j in zip(ia, ib)])
+    return (float(diff),) + _summary(bs, alpha)
 
 
 # --------------------------------------------------------------------------- #
