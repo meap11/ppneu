@@ -24,3 +24,8 @@ the common practice of pooling folders and re-splitting at the image level:
 605 of 879 test images (69%) then share a conservative patient cluster with train
 (`manifests/leakage_report.json`). The experiment compares official vs
 image_random vs grouped.
+
+**Update (Steps 3–5):** the between-condition AUROC comparison (image_random vs grouped) turned out not
+to be robust across split realisations: grouping changes the test-set composition. Leakage is instead
+measured inside the image_random test set (patients seen vs unseen in train), where it replicates. See
+`notebooks/03_eval.ipynb` and `results/table2b_*.csv`.
