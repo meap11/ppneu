@@ -109,6 +109,20 @@ def _cluster_indices(groups, n_boot: int, seed: int):
         yield np.concatenate([members[g] for g in rng.integers(0, len(members), len(members))])
 
 
+def cluster_weights(clusters, n_boot: int = 2000, seed: int = 0):
+    """Yield {cluster: weight} for a cluster bootstrap shared by several image sets.
+
+    Each replicate draws len(unique clusters) clusters with replacement; a cluster's weight
+    is how often it was drawn. Applying the same weights to every set keeps images that
+    appear in several sets (e.g. overlapping test folds) consistently resampled.
+    """
+    uniq = np.unique(np.asarray(clusters))
+    rng = np.random.default_rng(seed)
+    for _ in range(n_boot):
+        counts = np.bincount(rng.integers(0, len(uniq), len(uniq)), minlength=len(uniq))
+        yield pd.Series(counts, index=uniq)
+
+
 def _indices(y, groups, n_boot, seed):
     return _strat_indices(y, n_boot, seed) if groups is None else _cluster_indices(groups, n_boot, seed)
 

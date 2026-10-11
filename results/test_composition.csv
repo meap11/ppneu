@@ -1,0 +1,7 @@
+realisation,condition,n,clusters,orig_test_%,virus_%,bacteria_%,normal_%
+s0,image_random,879,744,11.3,27.2,45.7,27.1
+s0,grouped,874,641,5.5,32.5,40.4,27.1
+s1,image_random,879,742,10.5,25.6,47.3,27.1
+s1,grouped,874,641,5.4,31.4,41.5,27.1
+s2,image_random,879,758,11.5,24.5,48.5,27.1
+s2,grouped,874,641,5.5,32.7,40.2,27.1
